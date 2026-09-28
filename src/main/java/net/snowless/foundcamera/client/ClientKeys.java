@@ -22,6 +22,14 @@ public final class ClientKeys {
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_N, CAT);
     public static final KeyMapping TOGGLE_TEXT = new KeyMapping("key.foundcamera.toggle_text",
             InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_H, CAT);
+    public static final KeyMapping ZOOM_IN = new KeyMapping("key.foundcamera.zoom_in",
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_EQUAL, CAT);
+    public static final KeyMapping ZOOM_OUT = new KeyMapping("key.foundcamera.zoom_out",
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_MINUS, CAT);
+    public static final KeyMapping FLIP = new KeyMapping("key.foundcamera.flip",
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F, CAT);
+    public static final KeyMapping FEAR_SHAKE = new KeyMapping("key.foundcamera.fear_shake",
+            InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_G, CAT);
 
     @SubscribeEvent
     public static void registerKeys(RegisterKeyMappingsEvent event) {
@@ -29,6 +37,10 @@ public final class ClientKeys {
         event.register(STOP);
         event.register(INFRARED);
         event.register(TOGGLE_TEXT);
+        event.register(ZOOM_IN);
+        event.register(ZOOM_OUT);
+        event.register(FLIP);
+        event.register(FEAR_SHAKE);
     }
 
     @SubscribeEvent

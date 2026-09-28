@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.snowless.foundcamera.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "PlayerModelMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "refmap": "foundcamera.refmap.json"
+}
