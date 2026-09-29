@@ -20,63 +20,67 @@ import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.snowless.foundcamera.camcorder.CamcorderState;
+import net.snowless.foundcamera.config.ModConfig;
 import net.snowless.foundcamera.registry.ModItems;
 import org.slf4j.Logger;
 
 /**
- * Dono ÚNICO da câmera enquanto a filmadora está ativa.
+ * Controle da câmera enquanto a filmadora está ativa.
  *
- * Como a selfie fica "perto": a técnica do SelfieCam (kubbidev) - câmera frontal do jogo
- * e FOV bem estreito (teleobjetiva). A 3-4 blocos com FOV ~22° o enquadramento é o mesmo de
- * uma câmera a ~1 bloco do rosto, sem depender de mover a câmera nem de colisão.
+ * Flip (facingSelf):
+ *  - força terceira pessoa frontal e puxa a câmera para ~0.75 do rosto (como arm-selfie-v2)
+ *  - durante a animação de flip, faz órbita suave até a posição final
  *
- *  - tecla V: selfie animada. A câmera gira em órbita ao redor do personagem, se afasta e o FOV
- *    fecha ao mesmo tempo. Se o jogo não deixar mover a câmera, cai no plano B: câmera frontal
- *    do jogo (sem a órbita) + FOV estreito.
- *  - câmera frontal do jogo (F5 frontal / o seu "flip"): só ganha o FOV estreito.
- *  - primeira pessoa: só tremor e arrasto (nada da selfie mexe nela).
- *
- * Roda com prioridade LOWEST: se outro código seu mexer na câmera, este vence.
+ * Primeira pessoa:
+ *  - mão/item já escondidos em ClientForgeEvents (RenderHandEvent)
+ *  - offset leve para frente/baixo para parecer que a câmera está na mão, não na cabeça
+ *  - holdPoint para o braço procedural (se ativo)
  */
 @Mod.EventBusSubscriber(modid = ModItems.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CamcorderCamera {
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    // ================= AJUSTES: selfie =================
-    /** Tecla V: distância final da câmera, em blocos (a frontal do vanilla usa 4). */
-    private static final float DISTANCE = 3.0f;
-    /** Tecla V: FOV vertical final, em graus. Menor = mais perto. */
-    private static final float SELFIE_FOV = 22.0f;
-    /** Câmera frontal do jogo (seu flip): FOV vertical usado. */
-    private static final float FRONT_FOV = 22.0f;
-    /** 1 = a câmera passa pela direita do personagem, -1 = pela esquerda. */
+    // ================= selfie / flip próximo do corpo =================
+    /** Distância final do rosto até a câmera (braço alcança ~0.7). */
+    private static final float DISTANCE = 0.75f;
+    /** 1 = órbita pela direita, -1 = pela esquerda. */
     private static final float ORBIT_SIDE = 1.0f;
-    /** Duração da animação, em segundos. */
-    private static final float DURATION = 1.0f;
-    /** Inclinação lateral (graus) no meio da virada. Inverta o sinal se inclinar pro lado errado. */
+    /** Inclinação lateral no meio da virada (graus). */
     private static final float SWING_ROLL_DEG = 7.0f;
-    /** Altura do ponto que a câmera mira (0 = altura dos olhos). */
     private static final float PIVOT_Y_OFFSET = 0.0f;
-    /** Abaixo dessa distância a cabeça do modelo é escondida. */
-    private static final float HEAD_HIDE_DIST = 0.6f;
+    private static final float HEAD_HIDE_DIST = 0.5f;
+    /** Em FP / 3ª por trás: ponto de mão na frente do rosto. */
+    private static final float HOLD_FORWARD = 0.5f;
 
-    // ================= AJUSTES: tremor / peso =================
-    private static final float FOLLOW_SPEED = 8.0f;   // menor = mais arrasto
-    private static final float MAX_LAG_DEG = 10.0f;   // limite do atraso
-    private static final float ROLL_FROM_LAG = 0.15f; // inclina ao virar rápido
-    private static final float SHAKE_YAW = 1.2f;      // graus
+    // ================= FP: visão nasce na filmadora (mão) =================
+    /**
+     * Alcance do braço a partir dos olhos até a filmadora.
+     * ~0.45-0.55 = antebraço esticado segurando câmera na frente do peito.
+     */
+    private static final float FP_ARM_REACH = 0.48f;
+    /** Queda vertical da mão em relação ao olho (ombro → mão). */
+    private static final float FP_ARM_DROP = 0.28f;
+    /** Lateral da mão principal a partir do centro do peito. */
+    private static final float FP_ARM_SIDE = 0.22f;
+    /**
+     * A câmera fica um pouco atrás da ponta da mão (em direção ao ombro),
+     * para o antebraço aparecer na borda inferior da tela.
+     */
+    private static final float FP_CAM_BACK_FROM_HAND = 0.08f;
+
+    // ================= tremor / peso =================
+    private static final float FOLLOW_SPEED = 8.0f;
+    private static final float MAX_LAG_DEG = 10.0f;
+    private static final float ROLL_FROM_LAG = 0.15f;
+    private static final float SHAKE_YAW = 1.2f;
     private static final float SHAKE_PITCH = 0.9f;
     private static final float SHAKE_ROLL = 1.6f;
-    private static final float WALK_SHAKE = 6.0f;     // quanto o tremor cresce andando
-    private static final float STEP_BOB_DEG = 1.0f;   // balanço do passo
-    private static final float SHAKE_SPEED = 1.0f;    // multiplicador de frequência
+    private static final float WALK_SHAKE = 6.0f;
+    private static final float STEP_BOB_DEG = 1.0f;
+    private static final float SHAKE_SPEED = 1.0f;
 
-    // ================= estado =================
-    private static boolean selfie;
-    private static float progress;            // 0 = normal, 1 = selfie completa
-    private static boolean forcing;           // tecla V: estamos controlando o tipo de câmera
-    private static CameraType previousType = CameraType.FIRST_PERSON;
     private static boolean hideHead;
+    private static Vec3 holdPoint;
     private static boolean loggedFirstRun;
     private static CameraType lastLoggedType;
 
@@ -90,58 +94,42 @@ public final class CamcorderCamera {
         return CamcorderState.isActive();
     }
 
-    /** O braço da selfie só existe em terceira pessoa (em primeira pessoa fica como no jogo). */
     public static boolean isProceduralArm() {
+        // Em FP o FirstPersonBody controla o braço; o layer procedural é só 3ª pessoa (flip/selfie).
         Minecraft mc = Minecraft.getInstance();
-        return isFilming() && mc.player != null && !mc.options.getCameraType().isFirstPerson();
+        return isFilming() && holdPoint != null
+                && mc.options.getCameraType() != null
+                && !mc.options.getCameraType().isFirstPerson();
     }
 
-    private static CameraType selfieCameraType() {
-        // com órbita: terceira pessoa por trás (a câmera é movida por nós); plano B: frontal do jogo
-        return CameraAccess.isAvailable() ? CameraType.THIRD_PERSON_BACK : CameraType.THIRD_PERSON_FRONT;
+    public static Vec3 getHoldPoint() {
+        return holdPoint;
     }
 
-    // ------------------------------------------------------------ tick
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getInstance();
 
         if (mc.player == null || !isFilming()) {
-            while (CamcorderCameraKeys.SELFIE.consumeClick()) {}
-            if (forcing) release(mc);
-            selfie = false;
-            progress = 0f;
             hideHead = false;
+            holdPoint = null;
             loggedFirstRun = false;
             lastLoggedType = null;
+            swayInit = false;
             return;
         }
 
-        while (CamcorderCameraKeys.SELFIE.consumeClick()) {
-            selfie = !selfie;
-            LOGGER.info("[foundcamera] selfie = {} (orbita: {})", selfie, CameraAccess.isAvailable());
-        }
-
-        boolean needThird = selfie || progress > 0f;
-        CameraType wanted = selfieCameraType();
-        if (needThird && !forcing) {
-            previousType = mc.options.getCameraType();
-            mc.options.setCameraType(wanted);
-            forcing = true;
-        } else if (!needThird && forcing) {
-            release(mc);
-        } else if (needThird && mc.options.getCameraType() != wanted) {
-            mc.options.setCameraType(wanted); // apertou F5 no meio
+        // Tipo de câmera: ClientForgeEvents já força FP ou THIRD_PERSON_FRONT conforme facingSelf.
+        // Aqui só garantimos que, durante o flip para self, estejamos em alguma 3ª pessoa.
+        if (CamcorderState.isFlipping() && CamcorderState.isFlipToSelf()) {
+            CameraType t = mc.options.getCameraType();
+            if (t.isFirstPerson()) {
+                mc.options.setCameraType(CameraType.THIRD_PERSON_BACK);
+            }
         }
     }
 
-    private static void release(Minecraft mc) {
-        mc.options.setCameraType(previousType);
-        forcing = false;
-    }
-
-    // ------------------------------------------------------------ câmera
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void onCameraAngles(ViewportEvent.ComputeCameraAngles event) {
         Minecraft mc = Minecraft.getInstance();
@@ -149,13 +137,14 @@ public final class CamcorderCamera {
         if (player == null || mc.level == null || !isFilming()) {
             swayInit = false;
             hideHead = false;
+            holdPoint = null;
             return;
         }
 
         CameraType type = mc.options.getCameraType();
         if (!loggedFirstRun) {
             loggedFirstRun = true;
-            LOGGER.info("[foundcamera] controle de camera ATIVO (tremor/selfie/braco)");
+            LOGGER.info("[foundcamera] controle de camera ATIVO (tremor/flip-perto/braco)");
         }
         if (type != lastLoggedType) {
             lastLoggedType = type;
@@ -175,7 +164,8 @@ public final class CamcorderCamera {
         }
 
         // --- arrasto (peso)
-        float k = 1f - (float) Math.exp(-dt * FOLLOW_SPEED);
+        float follow = ModConfig.get().enableCameraSway ? FOLLOW_SPEED : 40f;
+        float k = 1f - (float) Math.exp(-dt * follow);
         lagYaw += Mth.wrapDegrees(yaw - lagYaw) * k;
         lagPitch += (pitch - lagPitch) * k;
         float dYaw = Mth.clamp(Mth.wrapDegrees(lagYaw - yaw), -MAX_LAG_DEG, MAX_LAG_DEG);
@@ -191,33 +181,86 @@ public final class CamcorderCamera {
         float walk = Mth.lerp(partial, player.walkDistO, player.walkDist);
         float stepBob = Mth.sin(walk * Mth.PI) * (float) Math.min(speed * 8.0, 1.0) * STEP_BOB_DEG;
 
-        float shakeYaw = wobble(time, 0f) * SHAKE_YAW * amp;
-        float shakePitch = wobble(time, 10f) * SHAKE_PITCH * amp + stepBob;
-        float shakeRoll = wobble(time, 20f) * SHAKE_ROLL * amp;
+        float shakeYaw = wobble(time, 0f) * SHAKE_YAW * amp * ModConfig.get().swayAmount;
+        float shakePitch = wobble(time, 10f) * SHAKE_PITCH * amp * ModConfig.get().swayAmount + stepBob;
+        float shakeRoll = wobble(time, 20f) * SHAKE_ROLL * amp * ModConfig.get().swayAmount;
 
-        // --- animação da selfie (tecla V)
-        float step = dt / DURATION;
-        progress = Mth.clamp(progress + (selfie ? step : -step), 0f, 1f);
-        float t = smootherStep(progress);
-
-        boolean orbit = forcing && CameraAccess.isAvailable();
-        float theta = orbit ? t * 180f : 0f;
-        float basePitch = orbit ? Mth.lerp(t, lagPitch, Mth.clamp(lagPitch, -90f, 35f)) : lagPitch;
+        // --- progresso do flip (0 = normal, 1 = selfie completa)
+        // Órbita de 180° só DURANTE a animação; com facingSelf estável o jogo já usa
+        // THIRD_PERSON_FRONT (vista de frente) e nós só puxamos a posição para perto.
+        float t = flipProgress01();
+        boolean orbiting = CamcorderState.isFlipping();
+        float theta = orbiting ? t * 180f : 0f;
 
         float camYaw = lagYaw - ORBIT_SIDE * theta + shakeYaw;
-        float camPitch = Mth.clamp(basePitch * Mth.cos(theta * Mth.DEG_TO_RAD) + shakePitch, -89f, 89f);
+        float camPitch = Mth.clamp(
+                (orbiting ? lagPitch * Mth.cos(theta * Mth.DEG_TO_RAD) : lagPitch) + shakePitch,
+                -89f, 89f);
         float roll = event.getRoll() + shakeRoll + dYaw * ROLL_FROM_LAG
-                + (orbit ? ORBIT_SIDE * Mth.sin(t * Mth.PI) * SWING_ROLL_DEG : 0f);
+                + (orbiting ? ORBIT_SIDE * Mth.sin(t * Mth.PI) * SWING_ROLL_DEG : 0f);
 
-        // --- posição da câmera (só na órbita da tecla V)
+        // --- posição e holdPoint
+        Vec3 pivot = player.getEyePosition(partial).add(0.0, PIVOT_Y_OFFSET, 0.0);
+        float yr = camYaw * Mth.DEG_TO_RAD;
+        float pr = camPitch * Mth.DEG_TO_RAD;
+        Vec3 look = new Vec3(-Mth.sin(yr) * Mth.cos(pr), -Mth.sin(pr), Mth.cos(yr) * Mth.cos(pr));
+        Vec3 flat = new Vec3(-Mth.sin(yr), 0.0, Mth.cos(yr));
+        Vec3 right = new Vec3(-flat.z, 0.0, flat.x);
+
         hideHead = false;
-        if (orbit) {
-            Vec3 pivot = player.getEyePosition(partial).add(0.0, PIVOT_Y_OFFSET, 0.0);
-            float yr = camYaw * Mth.DEG_TO_RAD;
-            float pr = camPitch * Mth.DEG_TO_RAD;
-            Vec3 look = new Vec3(-Mth.sin(yr) * Mth.cos(pr), -Mth.sin(pr), Mth.cos(yr) * Mth.cos(pr));
-            Vec3 target = placeCamera(mc, player, event, pivot, look, DISTANCE * t);
-            hideHead = pivot.distanceTo(target) < HEAD_HIDE_DIST;
+        boolean cameraMovable = CameraAccess.isAvailable();
+        boolean wantClose = CamcorderState.isFacingSelf()
+                || (CamcorderState.isFlipping() && CamcorderState.isFlipToSelf());
+
+        if (wantClose && cameraMovable && !type.isFirstPerson()) {
+            // Flip / selfie: puxa câmera para perto do rosto (arm-selfie-v2)
+            double dist = DISTANCE * Math.max(t, CamcorderState.isFacingSelf() && !CamcorderState.isFlipping() ? 1f : t);
+            if (CamcorderState.isFacingSelf() && !CamcorderState.isFlipping()) {
+                dist = DISTANCE;
+            }
+            Vec3 target = pivot.subtract(look.scale(dist));
+
+            BlockHitResult hit = mc.level.clip(new ClipContext(pivot, target,
+                    ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, player));
+            if (hit.getType() != HitResult.Type.MISS) {
+                dist = Math.max(0.0, hit.getLocation().distanceTo(pivot) - 0.3);
+                target = pivot.subtract(look.scale(dist));
+            }
+
+            CameraAccess.setPosition(event.getCamera(), target);
+            hideHead = dist < HEAD_HIDE_DIST;
+            holdPoint = target;
+        } else if (type.isFirstPerson() && cameraMovable) {
+            // FP: visão na filmadora — ombro → braço esticado → mão/câmera
+            boolean mainRight = player.getMainArm() == HumanoidArm.RIGHT;
+            double side = mainRight ? FP_ARM_SIDE : -FP_ARM_SIDE;
+
+            // Ponto da mão (onde a filmadora é segurada)
+            Vec3 hand = pivot
+                    .add(look.scale(FP_ARM_REACH))
+                    .add(0.0, -FP_ARM_DROP, 0.0)
+                    .add(right.scale(side));
+
+            // Câmera um pouco atrás da ponta da mão (antebraço entra no frame)
+            Vec3 toHand = hand.subtract(pivot);
+            double handLen = toHand.length();
+            Vec3 target = handLen > 1.0e-4
+                    ? pivot.add(toHand.scale(Math.max(0.05, (handLen - FP_CAM_BACK_FROM_HAND) / handLen)))
+                    : hand;
+
+            BlockHitResult hit = mc.level.clip(new ClipContext(pivot, target,
+                    ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, player));
+            if (hit.getType() != HitResult.Type.MISS) {
+                double d = Math.max(0.0, hit.getLocation().distanceTo(pivot) - 0.05);
+                target = pivot.add(target.subtract(pivot).normalize().scale(d));
+            }
+
+            CameraAccess.setPosition(event.getCamera(), target);
+            holdPoint = hand; // braço procedural aponta para a mão/filmadora
+        } else if (type == CameraType.THIRD_PERSON_BACK) {
+            holdPoint = pivot.add(look.scale(HOLD_FORWARD)).add(0.0, -0.12, 0.0);
+        } else {
+            holdPoint = pivot.add(look.scale(HOLD_FORWARD)).add(0.0, -0.12, 0.0);
         }
 
         event.setYaw(camYaw);
@@ -225,37 +268,22 @@ public final class CamcorderCamera {
         event.setRoll(roll);
     }
 
-    /** FOV estreito = câmera "perto" (técnica do SelfieCam). Só na selfie e na câmera frontal. */
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public static void onFov(ViewportEvent.ComputeFov event) {
-        if (!isFilming() || !event.usedConfiguredFov()) return;
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return;
-
-        double fov = event.getFOV();
-        if (forcing) {
-            float t = smootherStep(progress);
-            event.setFOV(Mth.lerp(t, fov, Math.min(fov, SELFIE_FOV)));
-        } else if (mc.options.getCameraType() == CameraType.THIRD_PERSON_FRONT) {
-            event.setFOV(Math.min(fov, FRONT_FOV));
+    /**
+     * 0 = vista normal, 1 = selfie completa.
+     * Usa o progresso do flip do CamcorderState; se já está facingSelf, fica em 1.
+     */
+    private static float flipProgress01() {
+        if (CamcorderState.isFlipping()) {
+            float p = CamcorderState.getFlipProgress();
+            if (CamcorderState.isFlipToSelf()) {
+                return smootherStep(Mth.clamp(p, 0f, 1f));
+            }
+            // virando de volta para FP: 1 → 0
+            return smootherStep(Mth.clamp(1f - p, 0f, 1f));
         }
+        return CamcorderState.isFacingSelf() ? 1f : 0f;
     }
 
-    /** Move a câmera para (pivot - look * dist), sem atravessar blocos. Devolve a posição final. */
-    private static Vec3 placeCamera(Minecraft mc, LocalPlayer player, ViewportEvent.ComputeCameraAngles event,
-                                    Vec3 pivot, Vec3 look, double dist) {
-        Vec3 target = pivot.subtract(look.scale(dist));
-        BlockHitResult hit = mc.level.clip(new ClipContext(pivot, target,
-                ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, player));
-        if (hit.getType() != HitResult.Type.MISS) {
-            double d = Math.max(0.0, hit.getLocation().distanceTo(pivot) - 0.3);
-            target = pivot.subtract(look.scale(d));
-        }
-        CameraAccess.setPosition(event.getCamera(), target);
-        return target;
-    }
-
-    /** Esconde cabeça (câmera colada no rosto) e o braço principal de fábrica (o layer desenha o da selfie). */
     @SubscribeEvent
     public static void onRenderLivingPre(RenderLivingEvent.Pre<?, ?> event) {
         Minecraft mc = Minecraft.getInstance();
@@ -267,11 +295,10 @@ public final class CamcorderCamera {
             humanoid.hat.visible = false;
         }
         if (isProceduralArm() && model instanceof PlayerModel<?> playerModel) {
-            CamcorderArmLayer.hideMainArm(playerModel, mc.player.getMainArm() == HumanoidArm.RIGHT);
+            CamcorderArmLayer.hideVanillaArms(playerModel);
         }
     }
 
-    // ------------------------------------------------------------ util
     private static float wobble(float t, float seed) {
         return (Mth.sin(t * 1.6f + seed)
                 + 0.6f * Mth.sin(t * 3.9f + seed * 1.7f)

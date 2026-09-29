@@ -78,7 +78,7 @@ public final class ModConfig {
         public boolean hideVanillaHands = true;
 
         // Corpo 1ª pessoa
-        public float bodyBack = 0.04f;
+        public float bodyBack = 0.12f;
         public float bodyDown = 0.06f;
         public float bodySide = 0.0f;
         public float armPitch = -1.57f;
